@@ -76,24 +76,25 @@ fn start(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     // try to open the file before doing anything
 
     var buffer: [512]u8 = @splat(0);
-    var stream = try addr.connect(io, .{ .mode = .dgram, .protocol = .udp });
-    var w = stream.writer(io, &buffer).interface;
-    try sendRequest(&w, filename);
+    const laddr = try net.IpAddress.parseLiteral("127.0.0.1");
+    var s = try laddr.bind(io, .{ .mode = .dgram, .protocol = .udp });
+    try sendRequest(io, &s, &addr, filename, &buffer);
+
+    while (true) {}
 }
 
-fn sendRequest(w: *std.Io.Writer, filename: []const u8) !void {
-    try w.writeInt(u16, 2, .big);
-    _ = try w.write(filename);
-    try w.flush();
+fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8, buffer: []u8) !void {
+    std.mem.writeInt(u16, @ptrCast(buffer), 2, .big);
+    @memcpy(buffer[2 .. 2 + filename.len], filename);
+    buffer[2 + filename.len] = 0;
+    @memcpy(buffer[3 + filename.len .. 3 + filename.len + 6], "octet\x00");
+    std.debug.print("sent: {any}\n", .{buffer[0 .. 2 + filename.len + 1 + 5 + 1]});
+    try socket.send(io, addr, buffer[0 .. 2 + filename.len + 1 + 5 + 1]);
 }
 
-fn recieveAck(r: *std.Io.Reader) !bool {
-    _ = r; // autofix
-}
+// fn recieveAck(socket: *net.Socket) !bool {}
 
-fn sendBlock(w: *std.Io.Writer) !void {
-    _ = w; // autofix
-}
+// fn sendBlock(socket: *net.Socket) !void {}
 
 fn printHelp() void {
     std.debug.print("ztftp ip:port filename", .{});
