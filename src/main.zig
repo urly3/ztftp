@@ -78,9 +78,15 @@ fn start(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     var buffer: [512]u8 = @splat(0);
     const laddr = try net.IpAddress.parseLiteral("127.0.0.1");
     var s = try laddr.bind(io, .{ .mode = .dgram, .protocol = .udp });
+
+    // send the request to write and wait for ack
     try sendRequest(io, &s, &addr, filename, &buffer);
 
-    while (true) {}
+    // block of data and wait for ack in a loop
+
+    while (true) {
+        // send data blocks and receive acks in a loop
+    }
 }
 
 fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8, buffer: []u8) !void {
@@ -90,9 +96,26 @@ fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, file
     @memcpy(buffer[3 + filename.len .. 3 + filename.len + 6], "octet\x00");
     std.debug.print("sent: {any}\n", .{buffer[0 .. 2 + filename.len + 1 + 5 + 1]});
     try socket.send(io, addr, buffer[0 .. 2 + filename.len + 1 + 5 + 1]);
+
+    try receiveAck(io, socket);
 }
 
-// fn recieveAck(socket: *net.Socket) !bool {}
+fn receiveAck(io: std.Io, socket: *net.Socket) !void {
+    var buf: [512]u8 = undefined;
+    const recv = try socket.receive(io, &buf);
+    const data = recv.data;
+
+    const op: u16 = std.mem.readInt(u16, data[0..2], .big);
+    const block: u16 = std.mem.readInt(u16, data[2..4], .big);
+
+    if (op != @intFromEnum(OpCode.ack) or block != current_block) {
+        return error.incorrectBlock;
+    }
+
+    // TODO: handle error response or something
+
+    std.debug.print("ack received for block {d}. recv {any}\n", .{ block, recv.data });
+}
 
 // fn sendBlock(socket: *net.Socket) !void {}
 
