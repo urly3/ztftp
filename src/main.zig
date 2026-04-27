@@ -70,15 +70,15 @@ pub fn main(init: std.process.Init) !void {
         @memcpy(filename, filename_str);
     }
 
-    try start(io, addr, filename);
+    try beginTransfer(io, addr, filename);
 }
 
-fn start(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
+fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     // try to open the file before doing anything
     var file = try std.Io.Dir.cwd().openFile(io, filename, .{ .mode = .read_only });
     defer file.close(io);
 
-    var data_buffer: [512]u8 = @splat(0);
+    var file_buffer: [4096]u8 = undefined;
     const laddr = try net.IpAddress.parseLiteral("127.0.0.1");
     var s = try laddr.bind(io, .{ .mode = .dgram, .protocol = .udp });
     defer s.close(io);
@@ -86,26 +86,36 @@ fn start(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     // send the request to write and wait for ack
     try sendRequest(io, &s, &addr, filename);
     try receiveAck(io, &s);
-    current_block = @addWithOverflow(current_block, 1)[0];
+    current_block +%= 1;
     current_block_long += 1;
-    var reader = file.reader(io, &data_buffer);
+    var reader = file.reader(io, &file_buffer);
+    var packet: [516]u8 = undefined;
+
+    const start = std.Io.Timestamp.now(io, .awake);
 
     // send block of data and wait for ack in a loop
     while (true) {
-        const read = try reader.interface.readSliceShort(&data_buffer);
+        const read = try reader.interface.readSliceShort(packet[4..]);
         if (read == 0) {
             break;
         }
 
-        try sendBlock(io, &s, data_buffer[0..read]);
         // TODO: handle wrong acks with resends or something
+        try sendBlock(io, &s, packet[0 .. read + 4]);
         try receiveAck(io, &s);
-        current_block = @addWithOverflow(current_block, 1)[0];
-        current_block_long += if (read == 512) 1 else 0;
+
         bytes_sent += read;
+
+        if (read < 512) {
+            break;
+        }
+        current_block +%= 1;
+        current_block_long += 1;
     }
 
-    std.debug.print("sent {d} blocks, worth {d} bytes\n", .{ current_block_long, bytes_sent });
+    const end = start.untilNow(io, .awake);
+
+    std.debug.print("ztftp: sent {d} blocks, worth {d} bytes, in {d} second(s)\n", .{ current_block_long, bytes_sent, end.toSeconds() });
 }
 
 fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8) !void {
@@ -113,9 +123,9 @@ fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, file
     std.mem.writeInt(u16, buffer[0..2], 2, .big);
     @memcpy(buffer[2 .. 2 + filename.len], filename);
     buffer[2 + filename.len] = 0;
-    @memcpy(buffer[3 + filename.len .. 3 + filename.len + 6], "octet\x00");
+    @memcpy(buffer[3 + filename.len .. filename.len + 9], "octet\x00");
     // std.debug.print("sent: {any}\n", .{buffer[0 .. 2 + filename.len + 1 + 5 + 1]});
-    try socket.send(io, addr, buffer[0 .. 2 + filename.len + 1 + 5 + 1]);
+    try socket.send(io, addr, buffer[0 .. filename.len + 9]);
 }
 
 fn receiveAck(io: std.Io, socket: *net.Socket) !void {
@@ -142,12 +152,10 @@ fn receiveAck(io: std.Io, socket: *net.Socket) !void {
     // std.debug.print("ack received for block {d}. recv {any}\n", .{ block, recv.data });
 }
 
-fn sendBlock(io: std.Io, socket: *net.Socket, data: []u8) !void {
-    var buf: [518]u8 = undefined;
-    std.mem.writeInt(u16, buf[0..2], @intFromEnum(OpCode.data), .big);
-    std.mem.writeInt(u16, buf[2..4], current_block, .big);
-    @memcpy(buf[4 .. data.len + 4], data);
-    try socket.send(io, &server_ip.?, buf[0 .. 4 + data.len]);
+fn sendBlock(io: std.Io, socket: *net.Socket, packet: []u8) !void {
+    std.mem.writeInt(u16, packet[0..2], @intFromEnum(OpCode.data), .big);
+    std.mem.writeInt(u16, packet[2..4], current_block, .big);
+    try socket.send(io, &server_ip.?, packet);
 
     // std.debug.print("sent block {d}: {any}\n", .{ current_block, buf[0 .. data.len + 4] });
 }
