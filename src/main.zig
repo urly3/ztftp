@@ -61,7 +61,6 @@ pub fn main(init: std.process.Init) !void {
         }
 
         if (i != 2) {
-            std.debug.print("i = {d}\n", .{i});
             printHelp();
             return;
         }
