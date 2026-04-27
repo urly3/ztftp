@@ -10,15 +10,15 @@ const OpCode = enum(u16) {
     err,
 };
 
-const ErrorCode = enum(u16) {
-    undefined,
-    file_not_found,
-    access_violation,
-    disk_full,
-    illegal_op,
-    unknown_id,
-    file_exists,
-    no_such_user,
+const ResponseError = error{
+    Undefined,
+    FileNotFound,
+    AccessViolation,
+    DiskFull,
+    IllegalOp,
+    UnknownId,
+    FileExists,
+    NoSuchUser,
 };
 
 const max_block_size = 512;
@@ -26,7 +26,6 @@ const max_retries = 2;
 var current_block: u16 = 0;
 var current_block_long: u64 = 0;
 var bytes_sent: u64 = 0;
-var resends: u16 = 0;
 var server_ip: ?net.IpAddress = null;
 
 pub fn main(init: std.process.Init) !void {
@@ -50,14 +49,8 @@ pub fn main(init: std.process.Init) !void {
                 printHelp();
                 return;
             }
-
-            if (i == 0) {
-                host_str = arg;
-            }
-
-            if (i == 1) {
-                filename_str = arg;
-            }
+            if (i == 0) host_str = arg;
+            if (i == 1) filename_str = arg;
         }
 
         if (i != 2) {
@@ -83,42 +76,43 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     var s = try laddr.bind(io, .{ .mode = .dgram, .protocol = .udp });
     defer s.close(io);
 
-    // send the request to write and wait for ack
     try sendRequest(io, &s, &addr, filename);
     try receiveAck(io, &s);
+
     current_block +%= 1;
     current_block_long += 1;
+
     var reader = file.reader(io, &file_buffer);
     var packet: [516]u8 = undefined;
 
     const start = std.Io.Timestamp.now(io, .awake);
 
-    // send block of data and wait for ack in a loop
     while (true) {
         const read = try reader.interface.readSliceShort(packet[4..]);
-        if (read == 0) {
-            break;
-        }
+        if (read == 0) break;
 
         std.mem.writeInt(u16, packet[0..2], @intFromEnum(OpCode.data), .big);
         std.mem.writeInt(u16, packet[2..4], current_block, .big);
         try s.send(io, &server_ip.?, packet[0 .. read + 4]);
 
-        // TODO: handle wrong acks with resends or something
+        // note: can't use receiveTimeout at the moment, so no resends
+        // could maybe impl manually but cba
         try receiveAck(io, &s);
 
         bytes_sent += read;
 
-        if (read < 512) {
-            break;
-        }
+        if (read < 512) break;
+
         current_block +%= 1;
         current_block_long += 1;
     }
 
     const end = start.untilNow(io, .awake);
 
-    std.debug.print("ztftp: sent {d} blocks, worth {d} bytes, in {d} second(s)\n", .{ current_block_long, bytes_sent, end.toSeconds() });
+    std.debug.print(
+        "ztftp: sent {d} blocks, worth {d} bytes, in {d} second(s)\n",
+        .{ current_block_long, bytes_sent, end.toSeconds() },
+    );
 }
 
 fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8) !void {
@@ -127,7 +121,6 @@ fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, file
     @memcpy(buffer[2 .. 2 + filename.len], filename);
     buffer[2 + filename.len] = 0;
     @memcpy(buffer[3 + filename.len .. filename.len + 9], "octet\x00");
-    // std.debug.print("sent: {any}\n", .{buffer[0 .. 2 + filename.len + 1 + 5 + 1]});
     try socket.send(io, addr, buffer[0 .. filename.len + 9]);
 }
 
@@ -135,24 +128,31 @@ fn receiveAck(io: std.Io, socket: *net.Socket) !void {
     var buf: [512]u8 = undefined;
     const recv = try socket.receive(io, &buf);
     const data = recv.data;
-    if (server_ip == null) {
-        server_ip = recv.from;
-    }
+    if (server_ip == null) server_ip = recv.from;
 
     const op: u16 = std.mem.readInt(u16, data[0..2], .big);
-    const block: u16 = std.mem.readInt(u16, data[2..4], .big);
 
-    if (op != @intFromEnum(OpCode.ack)) {
-        // TODO: handle error response or something
-        return error.ErrorReceived;
+    switch (@as(OpCode, @enumFromInt(op))) {
+        .ack => {
+            const block: u16 = std.mem.readInt(u16, data[2..4], .big);
+            if (block != current_block) return error.IncorrectBlock;
+        },
+        .err => {
+            const error_code: u16 = std.mem.readInt(u16, data[2..4], .big);
+            return switch (error_code) {
+                0 => ResponseError.Undefined,
+                1 => ResponseError.FileNotFound,
+                2 => ResponseError.AccessViolation,
+                3 => ResponseError.DiskFull,
+                4 => ResponseError.IllegalOp,
+                5 => ResponseError.UnknownId,
+                6 => ResponseError.FileExists,
+                7 => ResponseError.NoSuchUser,
+                else => unreachable,
+            };
+        },
+        else => unreachable,
     }
-
-    if (block != current_block) {
-        // std.debug.print("ERR: ack received for block {d}. recv {any}\n", .{ block, recv.data });
-        return error.IncorrectBlock;
-    }
-
-    // std.debug.print("ack received for block {d}. recv {any}\n", .{ block, recv.data });
 }
 
 fn printHelp() void {
