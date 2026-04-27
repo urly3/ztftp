@@ -100,8 +100,11 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
             break;
         }
 
+        std.mem.writeInt(u16, packet[0..2], @intFromEnum(OpCode.data), .big);
+        std.mem.writeInt(u16, packet[2..4], current_block, .big);
+        try s.send(io, &server_ip.?, packet[0 .. read + 4]);
+
         // TODO: handle wrong acks with resends or something
-        try sendBlock(io, &s, packet[0 .. read + 4]);
         try receiveAck(io, &s);
 
         bytes_sent += read;
@@ -150,14 +153,6 @@ fn receiveAck(io: std.Io, socket: *net.Socket) !void {
     }
 
     // std.debug.print("ack received for block {d}. recv {any}\n", .{ block, recv.data });
-}
-
-fn sendBlock(io: std.Io, socket: *net.Socket, packet: []u8) !void {
-    std.mem.writeInt(u16, packet[0..2], @intFromEnum(OpCode.data), .big);
-    std.mem.writeInt(u16, packet[2..4], current_block, .big);
-    try socket.send(io, &server_ip.?, packet);
-
-    // std.debug.print("sent block {d}: {any}\n", .{ current_block, buf[0 .. data.len + 4] });
 }
 
 fn printHelp() void {
