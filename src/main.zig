@@ -21,7 +21,8 @@ const ResponseError = error{
     NoSuchUser,
 };
 
-const max_block_size = 512;
+const data_size = 512;
+const packet_size = data_size + 4;
 const max_retries = 2;
 var current_block: u16 = 0;
 var current_block_long: u64 = 0;
@@ -72,18 +73,19 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     defer file.close(io);
 
     var file_buffer: [4096]u8 = undefined;
+    var recv_buffer: [data_size]u8 = @splat(0);
     const laddr = try net.IpAddress.parseLiteral("127.0.0.1");
     var s = try laddr.bind(io, .{ .mode = .dgram, .protocol = .udp });
     defer s.close(io);
 
     try sendRequest(io, &s, &addr, filename);
-    try receiveAck(io, &s);
+    try receiveAck(io, &s, &recv_buffer);
 
     current_block +%= 1;
     current_block_long += 1;
 
     var reader = file.reader(io, &file_buffer);
-    var packet: [516]u8 = undefined;
+    var packet: [packet_size]u8 = @splat(0);
 
     const start = std.Io.Timestamp.now(io, .awake);
 
@@ -97,11 +99,11 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
 
         // note: can't use receiveTimeout at the moment, so no resends
         // could maybe impl manually but cba
-        try receiveAck(io, &s);
+        try receiveAck(io, &s, &recv_buffer);
 
         bytes_sent += read;
 
-        if (read < 512) break;
+        if (read < data_size) break;
 
         current_block +%= 1;
         current_block_long += 1;
@@ -116,7 +118,7 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
 }
 
 fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8) !void {
-    var buffer: [512]u8 = @splat(0);
+    var buffer: [data_size]u8 = @splat(0);
     std.mem.writeInt(u16, buffer[0..2], 2, .big);
     @memcpy(buffer[2 .. 2 + filename.len], filename);
     buffer[2 + filename.len] = 0;
@@ -124,9 +126,8 @@ fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, file
     try socket.send(io, addr, buffer[0 .. filename.len + 9]);
 }
 
-fn receiveAck(io: std.Io, socket: *net.Socket) !void {
-    var buf: [512]u8 = undefined;
-    const recv = try socket.receive(io, &buf);
+fn receiveAck(io: std.Io, socket: *net.Socket, buf: []u8) !void {
+    const recv = try socket.receive(io, buf);
     const data = recv.data;
     if (server_ip == null) server_ip = recv.from;
 
@@ -148,10 +149,10 @@ fn receiveAck(io: std.Io, socket: *net.Socket) !void {
                 5 => ResponseError.UnknownId,
                 6 => ResponseError.FileExists,
                 7 => ResponseError.NoSuchUser,
-                else => unreachable,
+                else => error.UnknownErrorCode,
             };
         },
-        else => unreachable,
+        else => return error.InvalidOpCode,
     }
 }
 
