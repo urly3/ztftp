@@ -60,6 +60,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         addr = try net.IpAddress.parseLiteral(host_str);
+        if (addr.getPort() == 0) addr.setPort(69);
         filename = try init.arena.allocator().alloc(u8, filename_str.len);
         @memcpy(filename, filename_str);
     }
@@ -140,6 +141,8 @@ fn receiveAck(io: std.Io, socket: *net.Socket, buf: []u8) !void {
         },
         .err => {
             const error_code: u16 = std.mem.readInt(u16, data[2..4], .big);
+            const zero = std.mem.indexOfScalar(u8, buf, 0) orelse unreachable;
+            std.log.err("{s}\n", .{buf[0..zero]});
             return switch (error_code) {
                 0 => ResponseError.Undefined,
                 1 => ResponseError.FileNotFound,
@@ -157,5 +160,5 @@ fn receiveAck(io: std.Io, socket: *net.Socket, buf: []u8) !void {
 }
 
 fn printHelp() void {
-    std.debug.print("ztftp ip:port filename\n", .{});
+    std.debug.print("ztftp ip[:port] filename\n", .{});
 }
