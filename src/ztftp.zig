@@ -70,7 +70,11 @@ pub fn main(init: std.process.Init) !void {
 
 fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     // try to open the file before doing anything
-    var file = try std.Io.Dir.cwd().openFile(io, filename, .{ .mode = .read_only });
+    var file = try std.Io.Dir.cwd().openFile(
+        io,
+        filename,
+        .{ .mode = .read_only },
+    );
     defer file.close(io);
 
     const file_size = try file.length(io);
@@ -96,7 +100,7 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
     std.debug.print("\x1b[?25l", .{});
     defer std.debug.print("\x1b[?25h", .{});
 
-    std.debug.print("file size: {d} bytes\n", .{file_size});
+    std.debug.print("file size: {B}\n", .{file_size});
     var transfer_percentage: usize = 0;
 
     while (true) {
@@ -118,8 +122,11 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
         current_block +%= 1;
         current_block_long += 1;
 
-        if (progress_stamp.untilNow(io, .awake).toMilliseconds() >= 250 and transfer_percentage != 10000 / ((file_size * 100) / bytes_sent)) {
-            transfer_percentage = 10000 / ((file_size * 100) / bytes_sent);
+        const new_tpct = 10000 / ((file_size * 100) / bytes_sent);
+        if (progress_stamp.untilNow(io, .awake).toMilliseconds() >= 250 and
+            transfer_percentage != new_tpct)
+        {
+            transfer_percentage = new_tpct;
             std.debug.print("\r{d}%", .{transfer_percentage});
             progress_stamp = std.Io.Timestamp.now(io, .awake);
         }
@@ -129,12 +136,17 @@ fn beginTransfer(io: std.Io, addr: net.IpAddress, filename: []const u8) !void {
 
     std.debug.print("\r{d}%\n", .{100});
     std.debug.print(
-        "sent {d} blocks, worth {d} bytes, in {d} second(s)\n",
+        "sent {d} blocks, worth {B}, in {d} second(s)\n",
         .{ current_block_long, bytes_sent, end.toSeconds() },
     );
 }
 
-fn sendRequest(io: std.Io, socket: *net.Socket, addr: *const net.IpAddress, filename: []const u8) !void {
+fn sendRequest(
+    io: std.Io,
+    socket: *net.Socket,
+    addr: *const net.IpAddress,
+    filename: []const u8,
+) !void {
     var buffer: [data_size]u8 = @splat(0);
     std.mem.writeInt(u16, buffer[0..2], 2, .big);
     @memcpy(buffer[2 .. 2 + filename.len], filename);
@@ -157,7 +169,8 @@ fn receiveAck(io: std.Io, socket: *net.Socket, buf: []u8) !void {
         },
         .err => {
             const error_code: u16 = std.mem.readInt(u16, data[2..4], .big);
-            const zero = std.mem.indexOfScalar(u8, buf, 0) orelse return error.MissingNullTerminator;
+            const zero = std.mem.indexOfScalar(u8, buf, 0) orelse
+                return error.MissingNullTerminator;
             std.log.err("{s}\n", .{buf[0..zero]});
             return switch (error_code) {
                 0 => ResponseError.Undefined,
